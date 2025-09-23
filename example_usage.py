@@ -19,6 +19,11 @@ def main():
     TENANT_ID = os.getenv("TENANT_ID", "your-tenant-id-here")
     DATA_AGENT_URL = os.getenv("DATA_AGENT_URL", "your-data-agent-url-here")
     AUTH_TOKEN = os.getenv("AUTH_TOKEN", None)  # Optional - for token-based authentication
+    ENABLE_CACHE = os.getenv("ENABLE_CACHE", "false").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        CACHE_TTL = int(os.getenv("CACHE_TTL", "0")) or None  # seconds; None means no expiry during process lifetime
+    except ValueError:
+        CACHE_TTL = None
     
     if TENANT_ID == "your-tenant-id-here" or DATA_AGENT_URL == "your-data-agent-url-here":
         print("❌ Please set your TENANT_ID and DATA_AGENT_URL")
@@ -44,7 +49,9 @@ def main():
         client = FabricDataAgentClient(
             tenant_id=TENANT_ID,
             data_agent_url=DATA_AGENT_URL,
-            auth_token=AUTH_TOKEN  # Can be None for interactive auth
+            auth_token=AUTH_TOKEN,  # Can be None for interactive auth
+            enable_cache=ENABLE_CACHE,
+            cache_ttl=CACHE_TTL,
         )
         
         print("\n🤖 Fabric Data Agent Client - Interactive Mode")
@@ -143,7 +150,10 @@ def main():
                         else:
                             print(f"\n📄 No lakehouse data source detected")
                     else:
-                        print(f"❌ Error in detailed run: {run_details['error']}")
+                        print(f"❌ Error in detailed run: {run_details.get('error')}")
+                        if "error_details" in run_details and run_details["error_details"]:
+                            print("\n🧰 Error details for debugging:")
+                            print(run_details["error_details"])
                 else:
                     # Regular query (not detailed)
                     print(f"\n❓ Asking: {user_query}")
@@ -152,6 +162,8 @@ def main():
                     print("-" * 50)
                     print(response)
                     print("-" * 50)
+                    if isinstance(response, str) and response.startswith("Error while calling data agent:"):
+                        print("\n🧰 Error details for debugging detected in response above.")
                     
             except KeyboardInterrupt:
                 print("\n⏹️ Operation cancelled by user")
@@ -172,6 +184,7 @@ def main():
         print("- Make sure you have access to the Fabric Data Agent")
         print("- Verify your Azure account has the necessary permissions")
         print("- The client will automatically fall back to interactive auth if token fails")
+        print("- Set ENABLE_CACHE=true to enable in-memory response caching. Optionally set CACHE_TTL (seconds)")
 
 if __name__ == "__main__":
     main()

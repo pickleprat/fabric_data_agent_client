@@ -23,6 +23,9 @@ import warnings
 from typing import Optional
 from azure.identity import InteractiveBrowserCredential
 from openai import OpenAI
+from dotenv import load_dotenv
+import json 
+import re 
 
 # Suppress OpenAI Assistants API deprecation warnings
 # (Fabric Data Agents don't support the newer Responses API yet)
@@ -34,7 +37,6 @@ warnings.filterwarnings(
 
 # Optional: Load from .env file if available
 try:
-    from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
@@ -51,7 +53,12 @@ class FabricDataAgentClient:
     - Proper cleanup of resources
     """
     
-    def __init__(self, tenant_id: str, data_agent_url: str, auth_token: Optional[str] = None):
+    def __init__(self, 
+        tenant_id: str, 
+        data_agent_url: str, 
+        auth_token: Optional[str] = None, 
+        enable_cache: bool = False, 
+        cache_ttl: Optional[int] = None):
         """
         Initialize the Fabric Data Agent client.
         
@@ -65,9 +72,11 @@ class FabricDataAgentClient:
         self.data_agent_url = data_agent_url
         self.credential = None
         self.auth_token = auth_token
-        self.token = None  # For credential-based authentication
+        self.token = None  
+        self.enable_cache = enable_cache
+        self.cache_ttl = cache_ttl  
+        self._cache = {}
         
-        # Validate inputs
         if not tenant_id:
             raise ValueError("tenant_id is required")
         if not data_agent_url:
@@ -83,6 +92,59 @@ class FabricDataAgentClient:
             print(f"Auth Token: Not provided (will use interactive browser authentication)")
         
         self._authenticate()
+
+    def _cache_get(self, key):
+        """Retrieve cached value if caching enabled and not expired."""
+        if not self.enable_cache:
+            return None
+        entry = self._cache.get(key)
+        if not entry:
+            return None
+        if self.cache_ttl is not None:
+            if (time.time() - entry["ts"]) > self.cache_ttl:
+                # expired
+                try:
+                    del self._cache[key]
+                except Exception:
+                    pass
+                return None
+        return entry["value"]
+
+    def _cache_set(self, key, value):
+        """Store value in cache if enabled."""
+        if not self.enable_cache:
+            return
+        self._cache[key] = {"ts": time.time(), "value": value}
+
+    def _format_api_error(self, e: Exception) -> str:
+        """Return a detailed string for API-related errors when possible."""
+        try:
+            # OpenAI v1 exceptions often include status_code and response
+            status = getattr(e, "status_code", None)
+            name = e.__class__.__name__
+            details = str(e)
+            body = None
+            resp = getattr(e, "response", None)
+            if resp is not None:
+                try:
+                    body = getattr(resp, "text", None) or getattr(resp, "content", None)
+                except Exception:
+                    body = None
+            parts = []
+            parts.append(f"Exception: {name}")
+            if status is not None:
+                parts.append(f"HTTP Status: {status}")
+            if details:
+                parts.append(f"Message: {details}")
+            if body:
+                # Avoid dumping extremely long payloads
+                body_str = body if isinstance(body, str) else str(body)
+                if len(body_str) > 4000:
+                    body_str = body_str[:4000] + "... [truncated]"
+                parts.append("Response Body:\n" + body_str)
+            return "\n".join(parts)
+        except Exception:
+            return str(e)
     
     def _authenticate(self):
         """
@@ -242,6 +304,13 @@ class FabricDataAgentClient:
         print(f"\n❓ Asking: {question}")
         
         try:
+            # Cache check
+            cache_key = ("ask", question.strip(), timeout)
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                print("💾 Cache hit for ask()")
+                return cached
+
             client = self._get_openai_client()
             
             # Create assistant without specifying model or instructions
@@ -312,13 +381,17 @@ class FabricDataAgentClient:
             
             # Return the response
             if responses:
-                return "\n".join(responses)
+                result = "\n".join(responses)
+                # Cache store
+                self._cache_set(cache_key, result)
+                return result
             else:
                 return "No response received from the data agent."
         
         except Exception as e:
-            print(f"❌ Error calling data agent: {e}")
-            return f"Error: {e}"
+            detailed = self._format_api_error(e)
+            print(f"❌ Error calling data agent:\n{detailed}")
+            return f"Error while calling data agent:\n{detailed}"
     
     def get_run_details(self, question: str) -> dict:
         """
@@ -333,6 +406,13 @@ class FabricDataAgentClient:
         print(f"\n🔍 Getting detailed run info for: {question}")
         
         try:
+            # Cache check
+            cache_key = ("details", question.strip())
+            cached = self._cache_get(cache_key)
+            if cached is not None:
+                print("💾 Cache hit for get_run_details()")
+                return cached
+
             client = self._get_openai_client()
             
             # Create assistant and thread without specifying model or instructions
@@ -459,11 +539,14 @@ class FabricDataAgentClient:
                                     print(f"      ... and {len(preview) - 5} more lines")
                     print()  # Empty line for readability
             
+            # Cache store
+            self._cache_set(cache_key, result)
             return result
             
         except Exception as e:
-            print(f"❌ Error getting run details: {e}")
-            return {"error": str(e)}
+            detailed = self._format_api_error(e)
+            print(f"❌ Error getting run details:\n{detailed}")
+            return {"error": str(e), "error_details": detailed}
 
     def _extract_sql_queries_with_data(self, steps) -> dict:
         """
@@ -532,7 +615,6 @@ class FabricDataAgentClient:
         Returns:
             list: SQL queries found
         """
-        import json
         sql_queries = []
         
         try:
@@ -588,8 +670,6 @@ class FabricDataAgentClient:
         Returns:
             list: SQL queries found in output
         """
-        import json
-        import re
         sql_queries = []
         
         try:
@@ -657,7 +737,6 @@ class FabricDataAgentClient:
         Returns:
             list: Formatted data lines
         """
-        import json
         data_lines = []
         
         try:
@@ -872,9 +951,6 @@ class FabricDataAgentClient:
         Returns:
             list: List of data rows found
         """
-        import re
-        import json
-        
         data_lines = []
         
         try:
