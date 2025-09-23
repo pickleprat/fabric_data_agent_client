@@ -18,7 +18,6 @@ Usage:
 
 import time
 import uuid
-import json
 import os
 import warnings
 from typing import Optional
@@ -52,18 +51,21 @@ class FabricDataAgentClient:
     - Proper cleanup of resources
     """
     
-    def __init__(self, tenant_id: str, data_agent_url: str):
+    def __init__(self, tenant_id: str, data_agent_url: str, auth_token: Optional[str] = None):
         """
         Initialize the Fabric Data Agent client.
         
         Args:
             tenant_id (str): Your Azure tenant ID
             data_agent_url (str): The published URL of your Fabric Data Agent
+            auth_token (str, optional): Authentication token for bypassing interactive authentication.
+                                      If not provided, will fall back to InteractiveBrowserCredential.
         """
         self.tenant_id = tenant_id
         self.data_agent_url = data_agent_url
         self.credential = None
-        self.token = None
+        self.auth_token = auth_token
+        self.token = None  # For credential-based authentication
         
         # Validate inputs
         if not tenant_id:
@@ -75,47 +77,83 @@ class FabricDataAgentClient:
         print(f"Tenant ID: {tenant_id}")
         print(f"Data Agent URL: {data_agent_url}")
         
+        if auth_token:
+            print(f"Auth Token: Provided (will use token-based authentication)")
+        else:
+            print(f"Auth Token: Not provided (will use interactive browser authentication)")
+        
         self._authenticate()
     
     def _authenticate(self):
         """
-        Perform interactive browser authentication and get initial token.
+        Authenticate using the provided auth token, with fallback to InteractiveBrowserCredential.
         """
         try:
             print("\n🔐 Starting authentication...")
-            print("A browser window will open for you to sign in to your Microsoft account.")
             
-            # Create credential for interactive authentication
-            self.credential = InteractiveBrowserCredential(
-                tenant_id=self.tenant_id,
-                # Optional: specify redirect_uri if needed
-                # redirect_uri="http://localhost:8400"
-            )
+            if self.auth_token:
+                print("Using provided authentication token...")
+                # Test the auth token by attempting to create a client and make a simple call
+                try:
+                    # We'll validate the token when we first use it in _get_openai_client
+                    self.credential = None
+                    print("✅ Authentication token accepted (will be validated on first use)")
+                    return
+                except Exception as token_error:
+                    print(f"⚠️ Auth token validation failed: {token_error}")
+                    print("Falling back to interactive browser authentication...")
+                    # Clear the invalid token and fall through to interactive auth
+                    self.auth_token = None
             
-            # Get initial token
-            self._refresh_token()
-            
-            print("✅ Authentication successful!")
-            
+            # Use interactive browser authentication (either as primary or fallback)
+            if not self.auth_token:
+                print("Using interactive browser authentication...")
+                print("A browser window will open for you to sign in to your Microsoft account.")
+                
+                self.credential = InteractiveBrowserCredential(
+                    tenant_id=self.tenant_id,
+                )
+                
+                # Get initial token for interactive auth
+                self._refresh_token()
+                print("✅ Interactive authentication successful!")
+                
         except Exception as e:
             print(f"❌ Authentication failed: {e}")
             raise
-    
+            
     def _refresh_token(self):
         """
-        Refresh the authentication token.
+        Refresh the authentication token (only applicable for credential-based auth).
         """
         try:
             print("🔄 Refreshing authentication token...")
+            
+            if self.auth_token:
+                # Using direct auth token - no refresh needed
+                print("✅ Using provided auth token (no refresh required)")
+                return
+            
             if self.credential is None:
-                raise ValueError("No credential available")
+                raise ValueError("No credential available for token refresh")
+            
             self.token = self.credential.get_token("https://api.fabric.microsoft.com/.default")
             print(f"✅ Token obtained, expires at: {time.ctime(self.token.expires_on)}")
             
         except Exception as e:
             print(f"❌ Token refresh failed: {e}")
-            raise
-    
+            # If token refresh fails and we have a credential, try to fall back to interactive auth
+            if self.credential is not None:
+                print("🔄 Attempting to re-authenticate...")
+                try:
+                    self.token = self.credential.get_token("https://api.fabric.microsoft.com/.default")
+                    print(f"✅ Re-authentication successful, expires at: {time.ctime(self.token.expires_on)}")
+                except Exception as reauth_error:
+                    print(f"❌ Re-authentication also failed: {reauth_error}")
+                    raise
+            else:
+                raise
+
     def _get_openai_client(self) -> OpenAI:
         """
         Create an OpenAI client configured for Fabric Data Agent calls.
@@ -123,19 +161,64 @@ class FabricDataAgentClient:
         Returns:
             OpenAI: Configured OpenAI client
         """
-        # Check if token needs refresh (refresh 5 minutes before expiry)
-        if self.token and self.token.expires_on <= (time.time() + 300):
-            self._refresh_token()
         
-        if not self.token:
-            raise ValueError("No valid authentication token available")
+        if self.auth_token:
+            # Using direct auth token
+            bearer_token = self.auth_token
+            print("🔑 Using provided auth token for API calls")
+            
+            # Test the token by creating a client and attempting a simple operation
+            try:
+                test_client = OpenAI(
+                    api_key="",  # Not used - we use Bearer token
+                    base_url=self.data_agent_url,
+                    default_query={"api-version": "2024-05-01-preview"},
+                    default_headers={
+                        "Authorization": f"Bearer {bearer_token}",
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "ActivityId": str(uuid.uuid4())
+                    }
+                )
+                # If we get here, the token format is at least valid
+                return test_client
+            except Exception as token_error:
+                print(f"⚠️ Auth token appears to be invalid: {token_error}")
+                print("Falling back to interactive browser authentication...")
+                # Clear the invalid token and fall back to credential-based auth
+                self.auth_token = None
+                
+                # Initialize interactive credential if not already done
+                if self.credential is None:
+                    print("Initializing interactive browser credential...")
+                    self.credential = InteractiveBrowserCredential(
+                        tenant_id=self.tenant_id,
+                    )
+                    self._refresh_token()
+        
+        # Using credential-based authentication (either primary or fallback)
+        if not self.auth_token:
+            # Check if token needs refresh (refresh 5 minutes before expiry)
+            if self.token and self.token.expires_on <= (time.time() + 300):
+                self._refresh_token()
+            
+            if not self.token:
+                if self.credential is None:
+                    raise ValueError("No valid authentication method available")
+                self._refresh_token()
+            
+            if not self.token:
+                raise ValueError("No valid authentication token available")
+            
+            bearer_token = self.token.token
+            print("🔑 Using credential-based token for API calls")
         
         return OpenAI(
             api_key="",  # Not used - we use Bearer token
             base_url=self.data_agent_url,
             default_query={"api-version": "2024-05-01-preview"},
             default_headers={
-                "Authorization": f"Bearer {self.token.token}",
+                "Authorization": f"Bearer {bearer_token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "ActivityId": str(uuid.uuid4())
@@ -952,6 +1035,7 @@ def main():
     # Configuration - Update these with your actual values
     TENANT_ID = os.getenv("TENANT_ID", "your-tenant-id-here")
     DATA_AGENT_URL = os.getenv("DATA_AGENT_URL", "your-data-agent-url-here")
+    AUTH_TOKEN = os.getenv("AUTH_TOKEN")  # Optional - if not provided, will use interactive auth
     
     # Validate configuration
     if TENANT_ID == "your-tenant-id-here" or DATA_AGENT_URL == "your-data-agent-url-here":
@@ -960,13 +1044,17 @@ def main():
         print("1. Edit this script and update the values directly")
         print("2. Set environment variables: TENANT_ID and DATA_AGENT_URL")
         print("3. Create a .env file with these variables")
+        print("\nOptional: Set AUTH_TOKEN environment variable to use token-based authentication")
+        print("If AUTH_TOKEN is not provided, interactive browser authentication will be used")
         return
     
     try:
-        # Initialize the client (this will trigger authentication)
+        # Initialize the client with optional auth token
+        # If auth_token is None, it will automatically fall back to InteractiveBrowserCredential
         client = FabricDataAgentClient(
             tenant_id=TENANT_ID,
-            data_agent_url=DATA_AGENT_URL
+            data_agent_url=DATA_AGENT_URL,
+            auth_token=AUTH_TOKEN  # This can be None for interactive auth
         )
         
         # Example questions
@@ -1001,6 +1089,11 @@ def main():
         print("\n⏹️ Operation cancelled by user")
     except Exception as e:
         print(f"\n❌ Error: {e}")
+        print("\nTroubleshooting tips:")
+        print("- If using AUTH_TOKEN, ensure it's valid and not expired")
+        print("- If using interactive auth, ensure you have browser access")
+        print("- Check that your TENANT_ID and DATA_AGENT_URL are correct")
+        print("- Verify your Azure account has the necessary permissions")
 
 
 if __name__ == "__main__":
