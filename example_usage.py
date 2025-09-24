@@ -49,7 +49,7 @@ def main():
         client = FabricDataAgentClient(
             tenant_id=TENANT_ID,
             data_agent_url=DATA_AGENT_URL,
-            auth_token=AUTH_TOKEN,  # Can be None for interactive auth
+            auth_token=None,  # Can be None for interactive auth
             enable_cache=ENABLE_CACHE,
             cache_ttl=CACHE_TTL,
         )

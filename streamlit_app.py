@@ -88,11 +88,9 @@ def main():
     # Read defaults from environment to reduce friction
     default_tenant = os.getenv("TENANT_ID", "")
     default_agent_url = os.getenv("DATA_AGENT_URL", "")
-    default_auth_token = os.getenv("AUTH_TOKEN", "")
 
     tenant_id = st.sidebar.text_input("Tenant ID", value=default_tenant, placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
     data_agent_url = st.sidebar.text_input("Data Agent URL", value=default_agent_url, placeholder="https://<your-agent-endpoint>")
-    auth_token = st.sidebar.text_input("Auth Token (optional)", value=default_auth_token, type="password", help="If provided, token-based auth will be used. Leave empty for interactive browser auth.")
 
     mode = st.sidebar.radio("Mode", ["Simple", "Detailed"], help="Simple = quick answer. Detailed = run details and agent analysis when available.")
     timeout = st.sidebar.slider("Timeout (seconds)", min_value=30, max_value=300, value=120, step=10)
