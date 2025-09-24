@@ -8,6 +8,10 @@ a Fabric Data Agent from outside of the Fabric environment.
 
 import os
 from fabric_data_agent_client import FabricDataAgentClient
+import dotenv
+
+# Load environment variables from .env if present
+dotenv.load_dotenv(override=True)
 
 def main():
     """
@@ -15,132 +19,157 @@ def main():
     """
     # Set your configuration here or in environment variables
     TENANT_ID = os.getenv("TENANT_ID", "your-tenant-id-here")
+    CLIENT_ID = os.getenv("CLIENT_ID", "your-client-id-here")
+    CLIENT_SECRET = os.getenv("CLIENT_SECRET", "your-client-secret-here")
     DATA_AGENT_URL = os.getenv("DATA_AGENT_URL", "your-data-agent-url-here")
     
     # Check if configuration is set
-    if TENANT_ID == "your-tenant-id-here" or DATA_AGENT_URL == "your-data-agent-url-here":
-        print("❌ Please set your TENANT_ID and DATA_AGENT_URL")
+    if (
+        TENANT_ID == "your-tenant-id-here"
+        or CLIENT_ID == "your-client-id-here"
+        or CLIENT_SECRET == "your-client-secret-here"
+        or DATA_AGENT_URL == "your-data-agent-url-here"
+    ):
+        print("❌ Please set TENANT_ID, CLIENT_ID, CLIENT_SECRET and DATA_AGENT_URL")
         print("\nOptions:")
         print("1. Set environment variables:")
         print("   export TENANT_ID='your-actual-tenant-id'")
+        print("   export CLIENT_ID='your-actual-client-id'")
+        print("   export CLIENT_SECRET='your-actual-client-secret'")
         print("   export DATA_AGENT_URL='your-actual-data-agent-url'")
         print("\n2. Edit this script and replace the placeholder values")
         print("\n3. Create a .env file with these variables")
         return
     
     try:
-        print("🚀 Starting Fabric Data Agent Client Example")
+        print("🚀 Starting Fabric Data Agent Client - CLI Mode")
         print("=" * 60)
         
-        # Initialize the client (this will trigger browser authentication)
+        # Initialize the client (service-to-service client credentials auth)
         client = FabricDataAgentClient(
             tenant_id=TENANT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
             data_agent_url=DATA_AGENT_URL
         )
         
-        # Example 1: Simple question
-        print("\n📋 Example 1: Simple Data Query")
-        response = client.ask("What data is available in the lakehouse?")
-        print(f"💬 Response: {response}")
+        print("\n🤖 Fabric Data Agent Client - Interactive Mode")
+        print("=" * 60)
+        print("You can now ask questions to your Fabric Data Agent!")
+        print("Type 'quit', 'exit', or 'q' to stop.")
+        print("Type 'help' for example queries.")
+        print("Type 'detailed <query>' to get detailed run analysis with SQL extraction.")
+        print("-" * 60)
         
-        # Example 2: Another simple query
-        print("\n📋 Example 2: Table Information Query")
-        response = client.ask("Show me information about the tables in the lakehouse")
-        print(f"💬 Response: {response}")
-        
-        # Example 3: Get detailed run information with SQL query extraction
-        print("\n📋 Example 3: Detailed Run Analysis with SQL Query Extraction and Raw Markdown Tables")
-        print("    (Now extracts raw markdown tables directly from agent responses when available)")
-        run_details = client.get_run_details("Show me the top 5 records from any available table")
-        
-        if "error" not in run_details:
-            print(f"✅ Run Status: {run_details['run_status']}")
-            print(f"📊 Steps Count: {len(run_details['run_steps']['data'])}")
-            print(f"📝 Messages Count: {len(run_details['messages']['data'])}")
-            
-            # Show the assistant's final response
-            messages = run_details.get('messages', {}).get('data', [])
-            assistant_messages = [msg for msg in messages if msg.get('role') == 'assistant']
-            if assistant_messages:
-                print(f"\n💬 Agent Response:")
-                latest_message = assistant_messages[-1]
-                content = latest_message.get('content', [])
-                if content and len(content) > 0:
-                    # Handle different content types
-                    if hasattr(content[0], 'text'):
-                        print(f"   {content[0].text.value}")
-                    elif isinstance(content[0], dict) and 'text' in content[0]:
-                        if isinstance(content[0]['text'], dict) and 'value' in content[0]['text']:
-                            print(f"   {content[0]['text']['value']}")
-                        else:
-                            print(f"   {content[0]['text']}")
-                    else:
-                        print(f"   {str(content[0])}")
-            
-            # Show the SQL query that retrieved data and its preview
-            if "data_retrieval_query" in run_details and run_details["data_retrieval_query"]:
-                print(f"\n🎯 SQL Query Used:")
-                print(f"   {run_details['data_retrieval_query']}")
+        while True:
+            try:
+                # Get user input
+                user_query = input("\n💭 Enter your question: ").strip()
                 
-                # Show data preview if available
-                if "sql_data_previews" in run_details and run_details["sql_data_previews"]:
-                    data_retrieval_index = run_details.get("data_retrieval_query_index", 1) - 1
-                    if 0 <= data_retrieval_index < len(run_details["sql_data_previews"]):
-                        preview = run_details["sql_data_previews"][data_retrieval_index]
-                        if preview:
-                            print(f"\n📊 Data Preview:")
-                            # Check if this is a raw markdown table (single item with newlines and pipes)
-                            if len(preview) == 1 and '\n' in preview[0] and '|' in preview[0]:
-                                # Raw markdown table - print directly with proper indentation
-                                table_lines = preview[0].split('\n')
-                                for line in table_lines:
-                                    if line.strip():  # Skip empty lines
-                                        print(f"   {line}")
-                            else:
-                                # Regular parsed data - print line by line
-                                for line in preview[:10]:  # Show first 10 lines
-                                    print(f"   {line}")
-                                if len(preview) > 10:
-                                    print(f"   ... and {len(preview) - 10} more lines")
-                        else:
-                            print(f"\n📊 No data preview available")
-            elif "sql_queries" in run_details and run_details["sql_queries"]:
-                print(f"\n🗃️ Lakehouse data source detected, but could not identify the specific data retrieval query")
-                # Show just the first/main query instead of all
-                if run_details["sql_queries"]:
-                    print(f"\n🎯 SQL Query Used:")
-                    print(f"   {run_details['sql_queries'][0]}")
+                # Handle special commands
+                if user_query.lower() in ['quit', 'exit', 'q']:
+                    print("\n👋 Goodbye!")
+                    break
+                
+                if user_query.lower() == 'help':
+                    print("\n📚 Example queries you can try:")
+                    print("- What data is available in the lakehouse?")
+                    print("- Show me the top 5 records from any available table")
+                    print("- Show top 10 ace inhibitors by total cost prescribed by internists in texas in 2022")
+                    print("- What are the column names and types in the main tables?")
+                    print("- Show me information about the tables in the database")
+                    print("- detailed <your query>  (for SQL extraction and detailed analysis)")
+                    continue
+                
+                if not user_query:
+                    print("⚠️ Please enter a question or type 'help' for examples.")
+                    continue
+                
+                # Check if user wants detailed analysis
+                if user_query.lower().startswith('detailed '):
+                    actual_query = user_query[9:].strip()  # Remove 'detailed ' prefix
+                    if not actual_query:
+                        print("⚠️ Please provide a query after 'detailed'. Example: detailed Show me top 5 records")
+                        continue
                     
-                    # Try to show data preview from any available source
-                    preview_shown = False
-                    if "sql_data_previews" in run_details and run_details["sql_data_previews"]:
-                        for preview in run_details["sql_data_previews"]:
-                            if preview:
-                                print(f"\n📊 Data Preview:")
-                                # Check if this is a raw markdown table
-                                if len(preview) == 1 and '\n' in preview[0] and '|' in preview[0]:
-                                    # Raw markdown table - print directly with proper indentation
-                                    table_lines = preview[0].split('\n')
-                                    for line in table_lines:
-                                        if line.strip():  # Skip empty lines
-                                            print(f"   {line}")
+                    print(f"\n🔍 Getting detailed analysis for: {actual_query}")
+                    run_details = client.get_run_details(actual_query)
+                    
+                    if "error" not in run_details:
+                        print(f"✅ Run Status: {run_details['run_status']}")
+                        print(f"📊 Steps Count: {len(run_details['run_steps']['data'])}")
+                        print(f"📝 Messages Count: {len(run_details['messages']['data'])}")
+                        
+                        # Show the assistant's final response
+                        messages = run_details.get('messages', {}).get('data', [])
+                        assistant_messages = [msg for msg in messages if msg.get('role') == 'assistant']
+                        if assistant_messages:
+                            print(f"\n💬 Agent Response:")
+                            latest_message = assistant_messages[-1]
+                            content = latest_message.get('content', [])
+                            if content and len(content) > 0:
+                                # Handle different content types
+                                if hasattr(content[0], 'text'):
+                                    print(f"   {content[0].text.value}")
+                                elif isinstance(content[0], dict) and 'text' in content[0]:
+                                    if isinstance(content[0]['text'], dict) and 'value' in content[0]['text']:
+                                        print(f"   {content[0]['text']['value']}")
+                                    else:
+                                        print(f"   {content[0]['text']}")
                                 else:
-                                    # Regular parsed data
-                                    for line in preview[:10]:
-                                        print(f"   {line}")
-                                    if len(preview) > 10:
-                                        print(f"   ... and {len(preview) - 10} more lines")
-                                preview_shown = True
-                                break
+                                    print(f"   {str(content[0])}")
+                        
+                        # Show SQL queries and data previews
+                        if "data_retrieval_query" in run_details and run_details["data_retrieval_query"]:
+                            print(f"\n🎯 SQL Query Used:")
+                            print(f"   {run_details['data_retrieval_query']}")
+                            
+                            # Show data preview if available
+                            if "sql_data_previews" in run_details and run_details["sql_data_previews"]:
+                                data_retrieval_index = run_details.get("data_retrieval_query_index", 1) - 1
+                                if 0 <= data_retrieval_index < len(run_details["sql_data_previews"]):
+                                    preview = run_details["sql_data_previews"][data_retrieval_index]
+                                    if preview:
+                                        print(f"\n📊 Data Preview:")
+                                        # Check if this is a raw markdown table
+                                        if len(preview) == 1 and '\n' in preview[0] and '|' in preview[0]:
+                                            table_lines = preview[0].split('\n')
+                                            for line in table_lines:
+                                                if line.strip():
+                                                    print(f"   {line}")
+                                        else:
+                                            for line in preview[:10]:
+                                                print(f"   {line}")
+                                            if len(preview) > 10:
+                                                print(f"   ... and {len(preview) - 10} more lines")
+                        elif "sql_queries" in run_details and run_details["sql_queries"]:
+                            print(f"\n🗃️ Lakehouse data source detected")
+                            print(f"\n🎯 SQL Query Used:")
+                            print(f"   {run_details['sql_queries'][0]}")
+                        else:
+                            print(f"\n📄 No lakehouse data source detected")
+                    else:
+                        print(f"❌ Error in detailed run: {run_details.get('error')}")
+                        if "error_details" in run_details and run_details["error_details"]:
+                            print("\n🧰 Error details for debugging:")
+                            print(run_details["error_details"])
+                else:
+                    # Regular query (not detailed)
+                    print(f"\n❓ Asking: {user_query}")
+                    response = client.ask(user_query)
+                    print(f"\n💬 Response:")
+                    print("-" * 50)
+                    print(response)
+                    print("-" * 50)
+                    if isinstance(response, str) and response.startswith("Error while calling data agent:"):
+                        print("\n🧰 Error details for debugging detected in response above.")
                     
-                    if not preview_shown:
-                        print(f"\n📊 No structured data preview available")
-            else:
-                print(f"\n📄 No lakehouse data source detected")
-        else:
-            print(f"❌ Error in detailed run: {run_details['error']}")
-        
-        print("\n✅ All examples completed successfully!")
+            except KeyboardInterrupt:
+                print("\n⏹️ Operation cancelled by user")
+                break
+            except Exception as e:
+                print(f"\n❌ Error processing query: {e}")
+                continue
         
     except KeyboardInterrupt:
         print("\n⏹️ Operation cancelled by user")
@@ -148,9 +177,8 @@ def main():
         print(f"\n❌ Error: {e}")
         print("\nTroubleshooting tips:")
         print("- Ensure you have the required packages installed: pip install -r requirements.txt")
-        print("- Check that your TENANT_ID and DATA_AGENT_URL are correct")
-        print("- Make sure you have access to the Fabric Data Agent")
-        print("- Verify your Azure account has the necessary permissions")
+        print("- Check that your TENANT_ID/CLIENT_ID/CLIENT_SECRET/DATA_AGENT_URL are correct")
+        print("- Make sure the Entra ID application has the necessary permissions")
 
 if __name__ == "__main__":
     main()

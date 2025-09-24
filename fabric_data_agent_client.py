@@ -3,7 +3,8 @@
 Fabric Data Agent External Client
 
 A standalone Python client for calling Microsoft Fabric Data Agents from outside
-of the Fabric environment using interactive browser authentication.
+of the Fabric environment using Azure AD client credentials (client ID and
+client secret).
 
 Requirements:
 - azure-identity
@@ -11,9 +12,9 @@ Requirements:
 - python-dotenv (optional, for environment variables)
 
 Usage:
-1. Set your TENANT_ID and DATA_AGENT_URL in the script or environment variables
-2. Run the script - it will open a browser for authentication
-3. The client will fetch a bearer token and make calls to your data agent
+1. Set TENANT_ID, CLIENT_ID, CLIENT_SECRET and DATA_AGENT_URL via environment variables or directly
+2. The client will obtain a bearer token using client credentials
+3. The client will use the token to call your Fabric Data Agent
 """
 
 import time
@@ -21,8 +22,7 @@ import uuid
 import json
 import os
 import warnings
-from typing import Optional
-from azure.identity import InteractiveBrowserCredential
+from azure.identity import ClientSecretCredential
 from openai import OpenAI
 
 # Suppress OpenAI Assistants API deprecation warnings
@@ -46,21 +46,25 @@ class FabricDataAgentClient:
     Client for calling Microsoft Fabric Data Agents from external applications.
     
     This client handles:
-    - Interactive browser authentication with Azure AD
+    - Service-to-service authentication with Azure AD using client credentials
     - Automatic token refresh
     - Bearer token management for API calls
     - Proper cleanup of resources
     """
     
-    def __init__(self, tenant_id: str, data_agent_url: str):
+    def __init__(self, tenant_id: str, client_id: str, client_secret: str, data_agent_url: str):
         """
         Initialize the Fabric Data Agent client.
         
         Args:
             tenant_id (str): Your Azure tenant ID
+            client_id (str): The Azure AD application (client) ID
+            client_secret (str): The client secret for the Azure AD application
             data_agent_url (str): The published URL of your Fabric Data Agent
         """
         self.tenant_id = tenant_id
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.data_agent_url = data_agent_url
         self.credential = None
         self.token = None
@@ -68,6 +72,10 @@ class FabricDataAgentClient:
         # Validate inputs
         if not tenant_id:
             raise ValueError("tenant_id is required")
+        if not client_id:
+            raise ValueError("client_id is required")
+        if not client_secret:
+            raise ValueError("client_secret is required")
         if not data_agent_url:
             raise ValueError("data_agent_url is required")
         
@@ -79,17 +87,16 @@ class FabricDataAgentClient:
     
     def _authenticate(self):
         """
-        Perform interactive browser authentication and get initial token.
+        Authenticate using Azure AD client credentials and get the initial token.
         """
         try:
-            print("\n🔐 Starting authentication...")
-            print("A browser window will open for you to sign in to your Microsoft account.")
+            print("\n🔐 Starting authentication using client credentials...")
             
-            # Create credential for interactive authentication
-            self.credential = InteractiveBrowserCredential(
+            # Create credential for client credentials authentication
+            self.credential = ClientSecretCredential(
                 tenant_id=self.tenant_id,
-                # Optional: specify redirect_uri if needed
-                # redirect_uri="http://localhost:8400"
+                client_id=self.client_id, 
+                client_secret=self.client_secret, 
             )
             
             # Get initial token
@@ -951,21 +958,30 @@ def main():
     """
     # Configuration - Update these with your actual values
     TENANT_ID = os.getenv("TENANT_ID", "your-tenant-id-here")
+    CLIENT_ID = os.getenv("CLIENT_ID", "your-client-id-here")
+    CLIENT_SECRET = os.getenv("CLIENT_SECRET", "your-client-secret-here")
     DATA_AGENT_URL = os.getenv("DATA_AGENT_URL", "your-data-agent-url-here")
     
     # Validate configuration
-    if TENANT_ID == "your-tenant-id-here" or DATA_AGENT_URL == "your-data-agent-url-here":
-        print("❌ Please update TENANT_ID and DATA_AGENT_URL with your actual values")
+    if (
+        TENANT_ID == "your-tenant-id-here"
+        or CLIENT_ID == "your-client-id-here"
+        or CLIENT_SECRET == "your-client-secret-here"
+        or DATA_AGENT_URL == "your-data-agent-url-here"
+    ):
+        print("❌ Please update TENANT_ID, CLIENT_ID, CLIENT_SECRET and DATA_AGENT_URL with your actual values")
         print("\nYou can either:")
         print("1. Edit this script and update the values directly")
-        print("2. Set environment variables: TENANT_ID and DATA_AGENT_URL")
+        print("2. Set environment variables: TENANT_ID, CLIENT_ID, CLIENT_SECRET and DATA_AGENT_URL")
         print("3. Create a .env file with these variables")
         return
     
     try:
-        # Initialize the client (this will trigger authentication)
+        # Initialize the client (client credentials authentication)
         client = FabricDataAgentClient(
             tenant_id=TENANT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
             data_agent_url=DATA_AGENT_URL
         )
         

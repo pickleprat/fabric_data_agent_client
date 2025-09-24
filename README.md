@@ -1,6 +1,6 @@
 # Fabric Data Agent External Client
 
-A standalone Python client for calling Microsoft Fabric Data Agents from outside of the Fabric environment using interactive browser authentication.
+A standalone Python client for calling Microsoft Fabric Data Agents from outside of the Fabric environment using Azure AD client credentials (client ID + client secret).
 
 ## Overview
 
@@ -8,7 +8,7 @@ This client enables you to interact with your Microsoft Fabric Data Agents from 
 
 ## Features
 
-- 🔐 **Interactive Browser Authentication** - Secure Azure AD authentication with automatic browser flow
+- 🔐 **Service-to-Service Authentication** - Uses Azure AD client credentials (client ID + client secret)
 - 🔄 **Automatic Token Refresh** - Handles token expiration and refresh automatically
 - 🧹 **Resource Cleanup** - Properly manages OpenAI threads and resources
 - ⚡ **Simple API** - Easy-to-use interface for querying your data agents
@@ -45,6 +45,8 @@ You can configure the client in three ways:
 
 ```bash
 export TENANT_ID=<your-azure-tenant-id>
+export CLIENT_ID=<your-entra-app-client-id>
+export CLIENT_SECRET=<your-entra-app-client-secret>
 export DATA_AGENT_URL=<your-fabric-data-agent-url>
 ```
 
@@ -54,6 +56,8 @@ Create a `.env` file in the project directory:
 
 ```env
 TENANT_ID=<your-azure-tenant-id>
+CLIENT_ID=<your-entra-app-client-id>
+CLIENT_SECRET=<your-entra-app-client-secret>
 DATA_AGENT_URL=<your-fabric-data-agent-url>
 ```
 
@@ -63,6 +67,8 @@ Edit the values directly in your script:
 
 ```python
 TENANT_ID = "<your-azure-tenant-id>"
+CLIENT_ID = "<your-entra-app-client-id>"
+CLIENT_SECRET = "<your-entra-app-client-secret>"
 DATA_AGENT_URL = "<your-fabric-data-agent-url>"
 ```
 
@@ -73,9 +79,11 @@ DATA_AGENT_URL = "<your-fabric-data-agent-url>"
 ```python
 from fabric_data_agent_client import FabricDataAgentClient
 
-# Initialize the client (will open browser for authentication)
+# Initialize the client (client credentials authentication)
 client = FabricDataAgentClient(
     tenant_id="your-tenant-id",
+    client_id="your-client-id",
+    client_secret="your-client-secret",
     data_agent_url="your-data-agent-url"
 )
 
@@ -130,9 +138,9 @@ python example_usage.py
 
 ### FabricDataAgentClient
 
-#### `__init__(tenant_id: str, data_agent_url: str)`
+#### `__init__(tenant_id: str, client_id: str, client_secret: str, data_agent_url: str)`
 
-Initialize the client with your Azure tenant ID and Fabric Data Agent URL.
+Initialize the client with your Azure tenant ID, Entra ID application credentials, and Fabric Data Agent URL.
 
 #### `ask(question: str, timeout: int = 120) -> str`
 
@@ -156,10 +164,10 @@ Ask a question and return detailed run information including steps, SQL queries,
 
 ## Authentication Flow
 
-1. When you initialize the client, it will automatically open your default browser
-2. Sign in with your Microsoft account that has access to the Fabric environment
-3. Grant permissions when prompted
-4. The client will automatically obtain and manage the authentication token
+1. Register an application in Microsoft Entra ID (Azure AD) and generate a client secret
+2. Grant the application appropriate access to call Fabric Data Agents (scope: `https://api.fabric.microsoft.com/.default`)
+3. Set `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, and `DATA_AGENT_URL`
+4. The client obtains and manages the authentication token using client credentials
 5. Tokens are automatically refreshed before expiration
 
 ## Error Handling
@@ -180,15 +188,15 @@ All errors are logged with helpful messages and troubleshooting tips.
 
 #### Authentication Fails
 
-- Ensure your Azure account has access to the Fabric environment
-- Check that your tenant ID is correct
-- Verify you have permissions to access the specific data agent
+- Ensure the Entra ID application (client) has access to call Fabric Data Agents
+- Check that your tenant ID, client ID, and client secret are correct
+- Verify the application has permissions for `https://api.fabric.microsoft.com/.default`
 
 #### Data Agent Not Responding
 
 - Verify the data agent URL is correct and published
 - Check if the data agent is running and accessible
-- Ensure your Azure account has permissions to call the data agent
+- Ensure your application has permissions to call the data agent
 
 #### Dependency Issues
 
@@ -204,7 +212,7 @@ All errors are logged with helpful messages and troubleshooting tips.
 
 1. Check the error messages - they include specific troubleshooting tips
 2. Verify your configuration values are correct
-3. Ensure you have the necessary Azure permissions
+3. Ensure your Entra ID application has the necessary permissions
 4. Test with simple queries first before trying complex ones
 
 ## Dependencies
@@ -215,10 +223,10 @@ All errors are logged with helpful messages and troubleshooting tips.
 
 ## Security Notes
 
+- Keep your client secret secure. Prefer environment variables or a secret manager (e.g., Azure Key Vault)
 - Authentication tokens are handled securely and automatically refreshed
-- No credentials are stored persistently
-- Interactive browser authentication ensures secure login
-- Bearer tokens are used for API authentication
+- No credentials are stored persistently by this client
+- Bearer tokens are used for API authentication with the Fabric Data Agent
 - Resources are properly cleaned up after each request
 
 ## License
@@ -234,9 +242,10 @@ Feel free to submit issues, feature requests, or pull requests to improve this c
 ### v1.0.0
 
 - Initial release
-- Interactive browser authentication
+- Client credentials authentication
 - Basic question/answer functionality
 - Detailed run information
 - Automatic token refresh
 - Resource cleanup
 - Comprehensive error handling
+
