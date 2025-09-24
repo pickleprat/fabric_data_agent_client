@@ -51,7 +51,14 @@ class FabricDataAgentClient:
     - Proper cleanup of resources
     """
     
-    def __init__(self, tenant_id: str, data_agent_url: str, auth_token: Optional[str] = None):
+    def __init__(self, 
+                 tenant_id: str, 
+                 data_agent_url: str,
+                 # Caching options (in-memory TTL cache)
+                 cache_enabled: bool = True,
+                 cache_ttl: int = 600,  # seconds
+                 cache_max_entries: int = 256,
+                 ):
         """
         Initialize the Fabric Data Agent client.
         
@@ -64,8 +71,12 @@ class FabricDataAgentClient:
         self.tenant_id = tenant_id
         self.data_agent_url = data_agent_url
         self.credential = None
-        self.auth_token = auth_token
-        self.token = None  # For credential-based authentication
+        self.token = None
+        # Cache configuration
+        self.cache_enabled = cache_enabled
+        self.cache_ttl = max(0, int(cache_ttl))
+        self.cache_max_entries = max(1, int(cache_max_entries)) if cache_enabled else 0
+        self._cache: Dict[str, Tuple[float, Any]] = {}
         
         # Validate inputs
         if not tenant_id:
@@ -225,6 +236,46 @@ class FabricDataAgentClient:
             }
         )
     
+    def _make_cache_key(self, method: str, question: str) -> str:
+        """
+        Build a cache key that scopes by method and agent URL to avoid collisions.
+        """
+        q = (question or "").strip()
+        return f"{method}::{self.data_agent_url}::{hash(q)}"
+
+    def _cache_get(self, key: str):
+        if not self.cache_enabled:
+            return None
+        item = self._cache.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if self.cache_ttl > 0 and (time.time() - ts) > self.cache_ttl:
+            # expired
+            try:
+                del self._cache[key]
+            except Exception:
+                pass
+            return None
+        return value
+
+    def _cache_set(self, key: str, value: Any):
+        if not self.cache_enabled:
+            return
+        # Evict oldest entries if over capacity
+        if len(self._cache) >= self.cache_max_entries:
+            # remove the oldest by timestamp
+            oldest_key = min(self._cache.items(), key=lambda kv: kv[1][0])[0]
+            try:
+                del self._cache[oldest_key]
+            except Exception:
+                pass
+        self._cache[key] = (time.time(), value)
+
+    def clear_cache(self):
+        """Clear all cached entries."""
+        self._cache.clear()
+    
     def ask(self, question: str, timeout: int = 120) -> str:
         """
         Ask a question to the Fabric Data Agent.
@@ -240,6 +291,12 @@ class FabricDataAgentClient:
             raise ValueError("Question cannot be empty")
         
         print(f"\n❓ Asking: {question}")
+        # Check cache first
+        cache_key = self._make_cache_key("ask", question)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            print("🗂️ Cache hit: returning cached response")
+            return cached
         
         try:
             client = self._get_openai_client()
@@ -312,7 +369,10 @@ class FabricDataAgentClient:
             
             # Return the response
             if responses:
-                return "\n".join(responses)
+                result_text = "\n".join(responses)
+                # Store in cache
+                self._cache_set(cache_key, result_text)
+                return result_text
             else:
                 return "No response received from the data agent."
         
