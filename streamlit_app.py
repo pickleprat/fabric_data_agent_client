@@ -15,7 +15,6 @@ Features:
 import os
 import sys
 import textwrap
-from typing import Optional
 
 import streamlit as st
 from dotenv import load_dotenv

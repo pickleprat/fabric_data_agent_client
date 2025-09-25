@@ -18,7 +18,6 @@ def main():
     """
     TENANT_ID = os.getenv("TENANT_ID", "your-tenant-id-here")
     DATA_AGENT_URL = os.getenv("DATA_AGENT_URL", "your-data-agent-url-here")
-    AUTH_TOKEN = os.getenv("AUTH_TOKEN", None)  # Optional - for token-based authentication
     ENABLE_CACHE = os.getenv("ENABLE_CACHE", "false").strip().lower() in ("1", "true", "yes", "on")
     try:
         CACHE_TTL = int(os.getenv("CACHE_TTL", "0")) or None  # seconds; None means no expiry during process lifetime
