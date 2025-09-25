@@ -31,22 +31,20 @@ from fabric_data_agent_client import FabricDataAgentClient
 load_dotenv(override=False)
 
 
-def _init_client(tenant_id: str, data_agent_url: str, auth_token: Optional[str]):
+def _init_client(tenant_id: str, data_agent_url: str ):
     """Initialize and return a FabricDataAgentClient instance."""
     return FabricDataAgentClient(
         tenant_id=tenant_id,
         data_agent_url=data_agent_url,
-        auth_token=auth_token,
     )
 
 
-def _get_session_client(tenant_id: str, data_agent_url: str, auth_token: Optional[str]):
+def _get_session_client(tenant_id: str, data_agent_url: str ):
     """Get or create a client and keep it stable in the session unless config changes."""
     # Detect configuration change
     cfg = {
         "tenant_id": tenant_id or "",
         "data_agent_url": data_agent_url or "",
-        "auth_token": auth_token or "",
     }
 
     if "client_cfg" not in st.session_state or st.session_state.get("client_cfg") != cfg:
@@ -58,7 +56,6 @@ def _get_session_client(tenant_id: str, data_agent_url: str, auth_token: Optiona
             st.session_state["fabric_client"] = _init_client(
                 tenant_id=tenant_id,
                 data_agent_url=data_agent_url,
-                auth_token=auth_token,
             )
     return st.session_state["fabric_client"]
 
@@ -155,7 +152,7 @@ def main():
             st.warning("Please enter a question to ask.")
         else:
             try:
-                client = _get_session_client(tenant_id, data_agent_url, auth_token or None)
+                client = _get_session_client(tenant_id, data_agent_url)
 
                 if mode == "Simple":
                     with st.spinner("Querying data agent..."):
