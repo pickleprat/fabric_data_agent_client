@@ -758,29 +758,325 @@ class FabricDataAgentClient:
                                 values = [str(row.get(h, "")) for h in headers]
                                 data_lines.append("| " + " | ".join(values) + " |")
                     
-                    elif isinstance(data, dict):
-                        # Handle single record or structured response
-                        if 'data' in data and isinstance(data['data'], list):
-                            # Nested data structure
-                            return self._format_list_data(data['data'])
-                        elif 'results' in data and isinstance(data['results'], list):
-                            # Results structure
-                            return self._format_list_data(data['results'])
-                        else:
-                            # Single record
-                            data_lines.append("| Key | Value |")
-                            data_lines.append("|---|---|")
-                            for key, value in data.items():
-                                data_lines.append(f"| {key} | {str(value)} |")
+                    # Also allow already-structured preview arrays
+                    elif isinstance(data, dict) and "rows" in data and isinstance(data["rows"], list):
+                        rows = data["rows"]
+                        if rows and isinstance(rows[0], dict):
+                            headers = list(rows[0].keys())
+                            data_lines.append("| " + " | ".join(headers) + " |")
+                            data_lines.append("|" + "---|" * len(headers))
+                            for row in rows[:10]:
+                                values = [str(row.get(h, "")) for h in headers]
+                                data_lines.append("| " + " | ".join(values) + " |")
                 
                 except json.JSONDecodeError:
-                    # If not JSON, look for other structured formats
-                    data_lines = self._extract_data_preview(output_str)
+                    # If not JSON, try to detect simple markdown-like rows already
+                    pass
         
         except Exception as e:
-            print(f"⚠️ Warning: Could not extract structured data: {e}")
+            print(f"⚠️ Warning: Could not parse structured data from output: {e}")
         
         return data_lines
+
+    # =============================
+    # Visualization helpers (Step 1)
+    # =============================
+    def _extract_json_from_text(self, text: str) -> Optional[dict]:
+        """Attempt to extract the largest JSON object from a text blob."""
+        try:
+            # Fast path: direct JSON
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        # Fallback: find the first '{' and last '}' and try to parse
+        try:
+            start = text.find('{')
+            end = text.rfind('}')
+            if start != -1 and end != -1 and end > start:
+                candidate = text[start:end+1]
+                return json.loads(candidate)
+        except Exception:
+            return None
+        return None
+
+    def _parse_markdown_table_to_records(self, lines: list[str]) -> list[dict]:
+        """Convert markdown table lines to list of dict rows."""
+        try:
+            if not lines:
+                return []
+            # Join if a single markdown block is provided
+            if len(lines) == 1 and ('|' in lines[0] and '\n' in lines[0]):
+                lines = [ln for ln in lines[0].split('\n') if ln.strip()]
+            # Find header and separator
+            header_line = None
+            sep_idx = None
+            for i, ln in enumerate(lines):
+                if '|' in ln and ('---' in ln or ln.strip().startswith('|-')):
+                    sep_idx = i
+                    # header is previous non-empty line with '|'
+                    j = i - 1
+                    while j >= 0 and (not lines[j].strip() or '|' not in lines[j]):
+                        j -= 1
+                    if j >= 0:
+                        header_line = lines[j]
+                    break
+            if header_line is None:
+                # Try first line as header
+                header_line = lines[0] if '|' in lines[0] else None
+                if header_line is None:
+                    return []
+                sep_idx = 1 if len(lines) > 1 else None
+
+            headers = [h.strip().strip('|').strip() for h in header_line.split('|') if h.strip()]
+            data_lines = lines[sep_idx+1:] if sep_idx is not None else lines[1:]
+            rows = []
+            for ln in data_lines:
+                if '|' not in ln:
+                    continue
+                cells = [c.strip() for c in ln.split('|') if c.strip()]
+                if len(cells) < len(headers):
+                    # pad
+                    cells = cells + [''] * (len(headers) - len(cells))
+                row = {headers[i]: cells[i] if i < len(cells) else '' for i in range(len(headers))}
+                # skip separator-like lines
+                if all(set(v) <= set('-:') for v in row.values() if v):
+                    continue
+                rows.append(row)
+            return rows
+        except Exception:
+            return []
+
+    def _infer_column_types(self, records: list[dict]) -> list[dict]:
+        """Infer basic column types from preview records."""
+        if not records:
+            return []
+        headers = list(records[0].keys())
+        cols = []
+        for h in headers:
+            # Inspect up to first 50 samples
+            vals = [r.get(h) for r in records[:50]]
+            ctype = "string"
+            # numeric?
+            try:
+                numeric_samples = 0
+                for v in vals:
+                    if v is None or v == "":
+                        continue
+                    float(v)
+                    numeric_samples += 1
+                if numeric_samples >= max(1, len(vals)//3):
+                    ctype = "number"
+            except Exception:
+                pass
+            # simple datetime detection
+            if ctype == "string":
+                for v in vals:
+                    if not v:
+                        continue
+                    if isinstance(v, str) and re.search(r"^\d{4}-\d{2}-\d{2}", v):
+                        ctype = "date"
+                        break
+            cols.append({"name": h, "type": ctype})
+        return cols
+
+    def _infer_roles_and_chart(self, columns: list[dict], records: list[dict]) -> tuple[list[dict], str]:
+        """Assign roles and suggest a default chart."""
+        # roles: dimension (categorical), measure (numeric), time (date)
+        roles = []
+        dims = [c for c in columns if c.get("type") == "string"]
+        nums = [c for c in columns if c.get("type") == "number"]
+        dates = [c for c in columns if c.get("type") in ("date", "datetime")]
+
+        for c in columns:
+            t = c.get("type")
+            role = "dimension"
+            if t == "number":
+                role = "measure"
+            elif t in ("date", "datetime"):
+                role = "time"
+            roles.append({"name": c["name"], "type": t, "role": role})
+
+        # Chart suggestion
+        chart = "table"
+        if dates and nums:
+            chart = "line"
+        elif dims and nums:
+            # few categories? consider pie if very few unique dims
+            chart = "bar"
+            try:
+                if records and len(set(str(r.get(dims[0]["name"])) for r in records if r.get(dims[0]["name"])) ) <= 6:
+                    chart = "pie"
+            except Exception:
+                pass
+
+        return roles, chart
+
+    def _normalize_visualization_spec(self, raw: dict) -> dict:
+        """Ensure the visualization spec has all required fields with safe defaults."""
+        spec = {
+            "intent": raw.get("intent") or "",
+            "chart_suggestion": raw.get("chart_suggestion") or "table",
+            "dataset_description": raw.get("dataset_description") or "",
+            "columns": [],
+            "data_preview": [],
+            "provenance": {
+                "sql_query": None,
+                "source": raw.get("provenance", {}).get("source") if isinstance(raw.get("provenance"), dict) else None,
+            },
+            "limits": {
+                "row_count": None,
+                "preview_rows": None,
+            },
+            "notes": raw.get("notes") or "",
+        }
+        # columns
+        cols = raw.get("columns")
+        if isinstance(cols, list):
+            norm_cols = []
+            for c in cols:
+                if isinstance(c, dict) and "name" in c:
+                    norm_cols.append({
+                        "name": c.get("name"),
+                        "type": c.get("type") or "string",
+                        "role": c.get("role") or "dimension",
+                    })
+            spec["columns"] = norm_cols
+        # data
+        data = raw.get("data_preview")
+        if isinstance(data, list) and (not data or isinstance(data[0], dict)):
+            spec["data_preview"] = data
+        # limits
+        lim = raw.get("limits")
+        if isinstance(lim, dict):
+            spec["limits"]["row_count"] = lim.get("row_count")
+            spec["limits"]["preview_rows"] = lim.get("preview_rows")
+        # provenance.sql_query
+        prov = raw.get("provenance")
+        if isinstance(prov, dict) and prov.get("sql_query"):
+            spec["provenance"]["sql_query"] = prov.get("sql_query")
+        return spec
+
+    def get_visualization_spec(self, question: str, max_preview_rows: int = 50, timeout: int = 120) -> dict:
+        """
+        Step 1: Convert a user's visualization request into a structured data+metadata spec.
+
+        Attempts to obtain a strict JSON payload from the agent. If not available,
+        falls back to constructing the spec from get_run_details() and parsed previews.
+        """
+        if not question or not question.strip():
+            raise ValueError("Question cannot be empty")
+
+        # Cache
+        cache_key = ("viz_spec", question.strip(), max_preview_rows, timeout)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        client = self._get_openai_client()
+
+        # 1) Try to instruct the agent to return JSON directly
+        instruction = (
+            "You are a data assistant returning visualization-ready data. "
+            "Return ONLY a JSON object with the following fields: "
+            "intent, chart_suggestion (bar|line|pie|table), dataset_description, "
+            "columns (array of {name,type(role from string|number|date|datetime),role from dimension|measure|time}), "
+            "data_preview (array of objects, up to N rows), provenance {sql_query, source}, "
+            "limits {row_count, preview_rows}, notes. Do not include any text outside the JSON. "
+            f"Limit data_preview to at most {max_preview_rows} rows."
+        )
+
+        try:
+            assistant = client.beta.assistants.create(model="not used")
+            thread = client.beta.threads.create()
+            client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=f"{instruction}\nUser request: {question}"
+            )
+            run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant.id)
+            start = time.time()
+            while run.status in ["queued", "in_progress"]:
+                if time.time() - start > timeout:
+                    break
+                time.sleep(2)
+                run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+
+            messages = client.beta.threads.messages.list(thread_id=thread.id, order="asc")
+            final_text = ""
+            for msg in messages:
+                if msg.role == "assistant" and msg.content:
+                    try:
+                        part = msg.content[0]
+                        if hasattr(part, 'text') and getattr(part, 'text', None) is not None and hasattr(part.text, 'value'):
+                            final_text = part.text.value
+                        else:
+                            final_text = str(part)
+                    except Exception:
+                        final_text = str(msg.content)
+
+            # Cleanup
+            try:
+                client.beta.threads.delete(thread_id=thread.id)
+            except Exception:
+                pass
+
+            # Try parse JSON
+            parsed = self._extract_json_from_text(final_text) if final_text else None
+            if isinstance(parsed, dict):
+                spec = self._normalize_visualization_spec(parsed)
+                # Cache and return
+                self._cache_set(cache_key, spec)
+                return spec
+        except Exception as e:
+            # Continue to fallback path
+            print(f"⚠️ Visualization JSON request failed, falling back. Details: {e}")
+
+        # 2) Fallback: use get_run_details() to extract previews and SQL
+        details = self.get_run_details(question)
+        spec: dict = {
+            "intent": question,
+            "chart_suggestion": "table",
+            "dataset_description": "",
+            "columns": [],
+            "data_preview": [],
+            "provenance": {"sql_query": None, "source": None},
+            "limits": {"row_count": None, "preview_rows": None},
+            "notes": "Constructed from run details preview; agent did not return structured JSON.",
+        }
+
+        sql_query = details.get("data_retrieval_query") or None
+        if sql_query:
+            spec["provenance"]["sql_query"] = sql_query
+            spec["provenance"]["source"] = "lakehouse"
+
+        previews = details.get("sql_data_previews") or []
+        records: list[dict] = []
+        # Take the first non-empty preview and parse
+        for pv in previews:
+            if not pv:
+                continue
+            # pv could be [markdown_table_str] or list of lines
+            recs = self._parse_markdown_table_to_records(pv)
+            if recs:
+                records = recs[:max_preview_rows]
+                break
+
+        if records:
+            inferred_cols = self._infer_column_types(records)
+            roles, chart = self._infer_roles_and_chart(inferred_cols, records)
+            spec["columns"] = roles
+            spec["data_preview"] = records
+            spec["chart_suggestion"] = chart or "table"
+            spec["limits"]["preview_rows"] = len(records)
+        else:
+            spec["notes"] += " No tabular preview rows were available."
+
+        # Cache and return
+        self._cache_set(cache_key, spec)
+        return spec
 
     def _extract_markdown_table(self, text: str) -> str:
         """

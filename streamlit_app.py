@@ -18,6 +18,8 @@ import textwrap
 
 import streamlit as st
 from dotenv import load_dotenv
+from visualization_models import VisualizationSpec
+from visualizer import Visualizer
 
 # Make sure we can import the local client when running via `streamlit run`
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -88,7 +90,11 @@ def main():
     tenant_id = st.sidebar.text_input("Tenant ID", value=default_tenant, placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
     data_agent_url = st.sidebar.text_input("Data Agent URL", value=default_agent_url, placeholder="https://<your-agent-endpoint>")
 
-    mode = st.sidebar.radio("Mode", ["Simple", "Detailed"], help="Simple = quick answer. Detailed = run details and agent analysis when available.")
+    mode = st.sidebar.radio(
+        "Mode",
+        ["Simple", "Detailed", "Visualize"],
+        help="Simple = quick answer. Detailed = run details and agent analysis when available. Visualize = chart the result.",
+    )
     timeout = st.sidebar.slider("Timeout (seconds)", min_value=30, max_value=300, value=120, step=10)
 
     st.sidebar.markdown("---")
@@ -158,10 +164,15 @@ def main():
                         response = client.ask(user_query.strip(), timeout=timeout)
                     st.session_state["last_result"] = {"mode": mode, "response": response}
                     st.session_state.pop("last_error", None)
-                else:
+                elif mode == "Detailed":
                     with st.spinner("Running detailed analysis (this may take a bit)..."):
                         details = client.get_run_details(user_query.strip())
                     st.session_state["last_result"] = {"mode": mode, "details": details}
+                    st.session_state.pop("last_error", None)
+                else:
+                    with st.spinner("Preparing visualization (fetching data + metadata)..."):
+                        spec_dict = client.get_visualization_spec(user_query.strip(), timeout=timeout)
+                    st.session_state["last_result"] = {"mode": mode, "spec": spec_dict}
                     st.session_state.pop("last_error", None)
             except Exception as e:
                 st.session_state["last_error"] = str(e)
@@ -175,7 +186,7 @@ def main():
         if last.get("mode") == "Simple":
             st.subheader("Response")
             st.write(last.get("response", "No response."))
-        else:
+        elif last.get("mode") == "Detailed":
             details = last.get("details", {})
             if not details or "error" in details:
                 st.error(details.get("error", "No details available."))
@@ -231,6 +242,81 @@ def main():
                                 preview_to_show = pv
                                 break
                     _render_data_preview(preview_to_show)
+        else:
+            # Visualize mode rendering
+            spec_dict = last.get("spec", {})
+            try:
+                spec = VisualizationSpec.model_validate(spec_dict)
+            except Exception as e:
+                st.error(f"Failed to validate visualization spec: {e}")
+                st.json(spec_dict)
+                st.stop()
+
+            st.subheader("Visualization")
+            viz = Visualizer()
+
+            # Derive columns by role
+            dims = [c.name for c in spec.columns if c.role == "dimension"]
+            measures = [c.name for c in spec.columns if c.role == "measure"]
+            time_cols = [c.name for c in spec.columns if c.role == "time"]
+
+            with st.container():
+                cols = st.columns([1,1,1])
+                with cols[0]:
+                    auto_chart = viz.pick_chart_type(spec)
+                    chart_choice = st.selectbox(
+                        "Chart type",
+                        options=["auto", "bar", "line", "pie", "table"],
+                        index=0,
+                        help="Auto uses data-driven rules; override to choose explicitly.",
+                    )
+                # UI per chart
+                overrides = {}
+                if chart_choice in ("auto", "bar"):
+                    with cols[1]:
+                        x_dim = st.selectbox("X (dimension)", options=dims or [""], index=0 if dims else 0)
+                    with cols[2]:
+                        y_measures = st.multiselect(
+                            "Measure(s)", options=measures, default=measures[:1] if measures else []
+                        )
+                    if chart_choice == "bar":
+                        overrides.update({"x": x_dim or None, "measures": y_measures or None})
+                if chart_choice == "line":
+                    with cols[1]:
+                        x_time = st.selectbox("Time (X)", options=time_cols or [""], index=0 if time_cols else 0)
+                    with cols[2]:
+                        y_measure = st.selectbox("Y (measure)", options=measures or [""], index=0 if measures else 0)
+                    color_dim = st.selectbox("Color (optional)", options=[""] + dims, index=0)
+                    overrides.update({
+                        "x": x_time or None,
+                        "y": y_measure or None,
+                        "color": color_dim or None,
+                    })
+                if chart_choice == "pie":
+                    with cols[1]:
+                        names_dim = st.selectbox("Names (dimension)", options=dims or [""], index=0 if dims else 0)
+                    with cols[2]:
+                        values_measure = st.selectbox("Values (measure)", options=measures or [""], index=0 if measures else 0)
+                    overrides.update({"pie_names": names_dim or None, "pie_values": values_measure or None})
+
+            try:
+                chosen = auto_chart if chart_choice == "auto" else chart_choice
+                fig = viz.render(spec, chosen, **overrides)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Failed to render visualization: {e}")
+
+            # Optional: show data and SQL provenance
+            with st.expander("Data Preview"):
+                if spec.data_preview:
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame(spec.data_preview))
+                else:
+                    st.write("No preview data available.")
+
+            if spec.provenance and spec.provenance.sql_query:
+                st.markdown("#### Data Retrieval Query")
+                st.code(spec.provenance.sql_query, language="sql")
 
     # Footer help
     st.markdown("---")
